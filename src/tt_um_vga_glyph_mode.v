@@ -64,7 +64,7 @@ module tt_um_vga_glyph_mode(
         end else if (frame_tick) begin
 
             // Advance automatic color every 60 frames.
-            if (color_frame == 6'd59) begin
+            if (color_frame == 6'd63) begin
                 color_frame <= 6'd0;
                 auto_color <= (auto_color == 3'd6)
                             ? 3'd0 : auto_color + 3'd1;
@@ -297,20 +297,46 @@ module tt_um_vga_glyph_mode(
         (wheels && !wheel_holes);
 
     // ui_in[2:0]: seven colors or automatic cycling.
-   wire [2:0] selected = auto_color;
+   wire [4:0] wave_phase =
+        hpos[8:4] - color_frame[5:1];
 
     reg [5:0] color;
 
     always @(*) begin
-        case (selected)
-            3'd0: color = 6'b110011; // magenta
-            3'd1: color = 6'b110000; // red
-            3'd2: color = 6'b000011; // blue
-            3'd3: color = 6'b001100; // green
-            3'd4: color = 6'b001111; // cyan
-            3'd5: color = 6'b111100; // yellow
-            3'd6: color = 6'b111111; // white
-            default: color = 6'b110011;
+        case (wave_phase)
+            5'd0:  color = 6'b110000;
+            5'd1:  color = 6'b110100;
+            5'd2:  color = 6'b110100;
+            5'd3:  color = 6'b111000;
+            5'd4:  color = 6'b111000;
+            5'd5:  color = 6'b111100;
+            5'd6:  color = 6'b111100;
+            5'd7:  color = 6'b101100;
+            5'd8:  color = 6'b101100;
+            5'd9:  color = 6'b011100;
+            5'd10: color = 6'b001100;
+            5'd11: color = 6'b001100;
+            5'd12: color = 6'b001101;
+            5'd13: color = 6'b001101;
+            5'd14: color = 6'b001110;
+            5'd15: color = 6'b001110;
+            5'd16: color = 6'b001111;
+            5'd17: color = 6'b001011;
+            5'd18: color = 6'b001011;
+            5'd19: color = 6'b000111;
+            5'd20: color = 6'b000111;
+            5'd21: color = 6'b000011;
+            5'd22: color = 6'b000011;
+            5'd23: color = 6'b010011;
+            5'd24: color = 6'b100011;
+            5'd25: color = 6'b100011;
+            5'd26: color = 6'b110011;
+            5'd27: color = 6'b110011;
+            5'd28: color = 6'b110010;
+            5'd29: color = 6'b110010;
+            5'd30: color = 6'b110001;
+            5'd31: color = 6'b110001;
+            default: color = 6'b110000;
         endcase
     end
 
