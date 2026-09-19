@@ -297,8 +297,7 @@ module tt_um_vga_glyph_mode(
         (wheels && !wheel_holes);
 
     // ui_in[2:0]: seven colors or automatic cycling.
-    wire [2:0] selected =
-        (ui_in[2:0] == 3'd7) ? auto_color : ui_in[2:0];
+   wire [2:0] selected = auto_color;
 
     reg [5:0] color;
 
@@ -321,7 +320,7 @@ module tt_um_vga_glyph_mode(
          car && hl) ? color : 6'd0;
 
     wire _unused_ok = &{
-        1'b0, ena, ui_in[5:3], uio_in,
+        1'b0, ena, ui_in[5:0], uio_in,
         glyph_row[10:6], glyph_line[10:4]
     };
 
