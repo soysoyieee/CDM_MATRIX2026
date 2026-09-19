@@ -2,162 +2,327 @@
  * Copyright (c) 2024-2025 James Ross
  * SPDX-License-Identifier: Apache-2.0
  */
-
 `default_nettype none
 
 module tt_um_vga_glyph_mode(
-	input  wire [7:0] ui_in,    // Dedicated inputs
-	output wire [7:0] uo_out,   // Dedicated outputs
-	input  wire [7:0] uio_in,   // IOs: Input path
-	output wire [7:0] uio_out,  // IOs: Output path
-	output wire [7:0] uio_oe,   // IOs: Enable path (active high: 0=input, 1=output)
-	input  wire       ena,      // always 1 when the design is powered, so you can ignore it
-	input  wire       clk,      // clock
-	input  wire       rst_n     // reset_n - low to reset
+    input  wire [7:0] ui_in,
+    output wire [7:0] uo_out,
+    input  wire [7:0] uio_in,
+    output wire [7:0] uio_out,
+    output wire [7:0] uio_oe,
+    input  wire ena,
+    input  wire clk,
+    input  wire rst_n
 );
 
-	// VGA signals
-	wire hsync, vsync, display_on;
-	wire [10:0] hpos;
-	wire [9:0] vpos;
+    wire hsync, vsync, display_on;
+    wire [10:0] hpos;
+    wire [9:0] vpos;
+    wire [5:0] RGB;
 
-	// TinyVGA PMOD
-	assign uo_out = {hsync, RGB[0], RGB[2], RGB[4], vsync, RGB[1], RGB[3], RGB[5]};
+    // Keep the original TinyVGA output connections.
+    assign uo_out = {
+        hsync, RGB[0], RGB[2], RGB[4],
+        vsync, RGB[1], RGB[3], RGB[5]
+    };
 
-	// Unused outputs assigned to 0.
-	assign uio_out = 0;
-	assign uio_oe  = 0;
+    assign uio_out = 8'd0;
+    assign uio_oe = 8'd0;
 
-	wire [7:0] xb = hpos[10:3];
-	wire [6:0] x_mix = {xb[7] ^ xb[3], xb[1], xb[4], xb[1], xb[6], xb[0], xb[2]};
-	wire [2:0] g_x = hpos[2:0];
-	wire [5:0] yb;
-	wire [3:0] _unused;
-	assign {_unused, yb} = vpos / 10'd12;
-	wire [5:0] g_unused;
-	wire [3:0] g_y;
-	assign {g_unused, g_y} = vpos - {yb, 3'b000} - {1'b0, yb, 2'b00};
-	wire hl;
+    hvsync_generator hvsync_gen(
+        .clk(clk),
+        .reset(~rst_n),
+        .mode(ui_in[7:6]),
+        .hsync(hsync),
+        .vsync(vsync),
+        .display_on(display_on),
+        .hpos(hpos),
+        .vpos(vpos)
+    );
 
-	// Suppress unused signals warning
-	wire _unused_ok = &{ena, ui_in[5:3], uio_in};
+    // Animation phases.
+    localparam [1:0] BUILD = 2'd0;
+    localparam [1:0] HOLD  = 2'd1;
+    localparam [1:0] DROP  = 2'd2;
+    localparam [1:0] GAP   = 2'd3;
 
-	reg [9:0] frame;
-	reg rst_drop;
+    reg [1:0] phase;
+    reg [7:0] phase_frame;
+    reg [5:0] color_frame;
+    reg [2:0] auto_color;
 
-	// VGA output
-	hvsync_generator hvsync_gen(
-		.clk(clk),
-		.reset(~rst_n),
-		.mode(ui_in[7:6]),
-		.hsync(hsync),
-		.vsync(vsync),
-		.display_on(display_on),
-		.hpos(hpos),
-		.vpos(vpos)
-	);
+    // Once per frame, after the 640 x 480 artwork area.
+    wire frame_tick =
+        (hpos == 11'd0 && vpos == 10'd480);
 
-	// glyphs
-	glyphs_rom glyphs(
-		.c(glyph_index),
-		.y(g_y),
-		.x(g_x),
-		.pixel(hl)
-	);
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            phase <= BUILD;
+            phase_frame <= 8'd0;
+            color_frame <= 6'd0;
+            auto_color <= 3'd0;
+        end else if (frame_tick) begin
 
-	// palette
-	// ui_in[1:0] picks a palette as before (0=green,1=red,2=blue,3=pride).
-	// ui_in[2] turns on alternating pink/green: each column of falling
-	// glyphs is entirely pink or entirely green, chosen by column parity.
-	wire alt_pink_green = ui_in[2];
-	wire [2:0] pid = alt_pink_green ? (xb[0] ? 3'd4 : 3'd0) : {1'b0, ui_in[1:0]};
-	wire [5:0] color;
-	palette_rom palettes(
-		.cid(y),
-		.pid(pid),
-		.color(color)
-	);
+            // Advance automatic color every 60 frames.
+            if (color_frame == 6'd59) begin
+                color_frame <= 6'd0;
+                auto_color <= (auto_color == 3'd6)
+                            ? 3'd0 : auto_color + 3'd1;
+            end else begin
+                color_frame <= color_frame + 6'd1;
+            end
 
-	// there are 39 glyphs
-	//wire [5:0] glyph_index = {xb[2] ^ yb[0], xb[0] ^ yb[1], xb[1] ^ yb[2], xb[4] ^ yb[3], xb[3] ^ yb[4]} // [0,31]
-	//	+ {1'b0, xb[5] ^ yb[5], xb[6] ^ yb[0], xb[0] ^ yb[1], xb[1] ^ yb[2]} // [0,15]
-	//	+ {1'b0, x[6:3]} // [0,15]
-	//	+ {1'b0, t & frame[7], t & frame[6], t & frame[5], t & frame[4] & s}; // [0,15]
+            case (phase)
+                BUILD: begin
+                    if (phase_frame == 8'd95) begin
+                        phase <= HOLD;
+                        phase_frame <= 8'd0;
+                    end else begin
+                        phase_frame <= phase_frame + 8'd1;
+                    end
+                end
 
-	//wire [5:0] glyph_index = (yb + xb) % 6'd19;
-	//wire [5:0] glyph_index = (yb + xb) % 6'd30;
-	//wire [5:0] glyph_index = (yb + xb) % 6'd39;
+                HOLD: begin
+                    // 180 frames is approximately 3 seconds.
+                    if (phase_frame == 8'd179) begin
+                        phase <= DROP;
+                        phase_frame <= 8'd0;
+                    end else begin
+                        phase_frame <= phase_frame + 8'd1;
+                    end
+                end
 
-	// "COLEGIO DE MUNTINLUPA" tiled diagonally across the screen (32-char
-	// message, padded with trailing spaces so the index just wraps with a
-	// cheap 5-bit truncation instead of a mod-39 divide).
-	function [5:0] msg_char;
-		input [4:0] idx;
-		begin
-			case (idx)
-				5'd0:  msg_char = 6'd2;  // C
-				5'd1:  msg_char = 6'd14; // O
-				5'd2:  msg_char = 6'd11; // L
-				5'd3:  msg_char = 6'd4;  // E
-				5'd4:  msg_char = 6'd6;  // G
-				5'd5:  msg_char = 6'd8;  // I
-				5'd6:  msg_char = 6'd14; // O
-				5'd7:  msg_char = 6'd26; // (space)
-				5'd8:  msg_char = 6'd3;  // D
-				5'd9:  msg_char = 6'd4;  // E
-				5'd10: msg_char = 6'd26; // (space)
-				5'd11: msg_char = 6'd12; // M
-				5'd12: msg_char = 6'd20; // U
-				5'd13: msg_char = 6'd13; // N
-				5'd14: msg_char = 6'd19; // T
-				5'd15: msg_char = 6'd8;  // I
-				5'd16: msg_char = 6'd13; // N
-				5'd17: msg_char = 6'd11; // L
-				5'd18: msg_char = 6'd20; // U
-				5'd19: msg_char = 6'd15; // P
-				5'd20: msg_char = 6'd0;  // A
-				default: msg_char = 6'd26; // padding (space)
-			endcase
-		end
-	endfunction
+                DROP: begin
+                    if (phase_frame == 8'd95) begin
+                        phase <= GAP;
+                        phase_frame <= 8'd0;
+                    end else begin
+                        phase_frame <= phase_frame + 8'd1;
+                    end
+                end
 
-	wire [5:0] glyph_index = msg_char((yb + xb) & 5'h1F);
-	
-	wire [1:0] a = xb[1:0];
-	wire [3:0] b = xb[5:2];
-	wire [2:0] d = xb[3:2] + 2'd3;
+                default: begin
+                    // Brief empty screen before repeating.
+                    if (phase_frame == 8'd29) begin
+                        phase <= BUILD;
+                        phase_frame <= 8'd0;
+                    end else begin
+                        phase_frame <= phase_frame + 8'd1;
+                    end
+                end
+            endcase
+        end
+    end
 
-	wire t = &{xb[0] ^ yb[2] ^ frame[7], xb[1] ^ yb[1] ^ frame[8], xb[2] ^ yb[3] ^ frame[9], xb[3] ^ yb[0]}; // toggle glyph
+    // Different columns fall at different times.
+    wire [7:0] xb = hpos[10:3];
 
-	// column features
-	wire s = ^xb[6:0]; // speed of rain
-	wire n = xb[1] ^ xb[3] ^ xb[5]; // lit on or off
+    wire [4:0] delay_code = {
+        xb[0], xb[2], xb[4], xb[1], xb[3]
+    };
 
-	wire [6:0] v = (s ? frame[8:2] : frame[9:3]) - yb - x_mix;
-	wire [3:0] c = {1'b0, a} + d;
-	wire [6:0] e = {3'b000, b} << c;
-	wire [6:0] f = v & e;
-	wire [6:0] x = v >> a;
-	wire [2:0] y = ~x[2:0];
-	wire [9:0] drop = {1'b0, yb, 3'd0} >> s;
-	wire drop_bit = ({3'd0, x_mix} + drop > frame) & ~rst_drop;
-	wire [5:0] glyph_color = {6{drop_bit}} ^ color;
+    wire [10:0] delay_px =
+        {4'b0000, delay_code, 2'b00};
 
-	wire [5:0] z = (&(~v[2:0]) & &(y)) ? 6'd63 : glyph_color;
+    wire [10:0] travel = {phase_frame, 3'b000};
+    wire [10:0] start_height = 11'd512 + delay_px;
 
-	wire [5:0] RGB = (display_on & hl & ~(|f | n | drop_bit)) ? z : 6'd0;
+    wire [10:0] lift = (travel < start_height)
+                    ? start_height - travel : 11'd0;
 
-	always @(posedge vsync, negedge rst_n) begin
-		if (~rst_n) begin
-			rst_drop <= 0;
-			frame <= 0;
-		end else begin
-			if (&frame) begin
-				rst_drop <= 1;
-			end
-			frame <= frame + 1;
-		end
-	end
+    wire [10:0] fall = (travel > delay_px)
+                    ? travel - delay_px : 11'd0;
+
+    reg [10:0] source_y;
+    reg source_valid;
+
+    always @(*) begin
+        source_y = {1'b0, vpos};
+        source_valid = 1'b1;
+
+        case (phase)
+            BUILD: begin
+                source_y = {1'b0, vpos} + lift;
+            end
+
+            HOLD: begin
+                source_y = {1'b0, vpos};
+            end
+
+            DROP: begin
+                source_y = {1'b0, vpos} - fall;
+                source_valid = ({1'b0, vpos} >= fall);
+            end
+
+            default: begin
+                source_valid = 1'b0;
+            end
+        endcase
+    end
+
+    // Original 8 x 12 font, following the moving columns.
+    wire [10:0] glyph_row = source_y / 11'd12;
+
+    wire [10:0] glyph_line =
+        source_y - (glyph_row << 3) - (glyph_row << 2);
+
+    wire [5:0] yb = glyph_row[5:0];
+    wire [3:0] g_y = glyph_line[3:0];
+
+    // "CDM BOOTCAMP 2026 " including a trailing space.
+    function [5:0] msg_char;
+        input [4:0] idx;
+        begin
+            case (idx)
+                5'd0:  msg_char = 6'd2;  // C
+                5'd1:  msg_char = 6'd3;  // D
+                5'd2:  msg_char = 6'd12; // M
+                5'd3:  msg_char = 6'd26; // space
+                5'd4:  msg_char = 6'd1;  // B
+                5'd5:  msg_char = 6'd14; // O
+                5'd6:  msg_char = 6'd14; // O
+                5'd7:  msg_char = 6'd19; // T
+                5'd8:  msg_char = 6'd2;  // C
+                5'd9:  msg_char = 6'd0;  // A
+                5'd10: msg_char = 6'd12; // M
+                5'd11: msg_char = 6'd15; // P
+                5'd12: msg_char = 6'd26; // space
+                5'd13: msg_char = 6'd28; // 2
+                5'd14: msg_char = 6'd36; // 0
+                5'd15: msg_char = 6'd28; // 2
+                5'd16: msg_char = 6'd32; // 6
+                5'd17: msg_char = 6'd26; // space
+                default: msg_char = 6'd26;
+            endcase
+        end
+    endfunction
+
+    // Repeat the phrase across the 80 visible columns.
+    wire [7:0] text_col =
+        (xb >= 8'd72) ? xb - 8'd72 :
+        (xb >= 8'd54) ? xb - 8'd54 :
+        (xb >= 8'd36) ? xb - 8'd36 :
+        (xb >= 8'd18) ? xb - 8'd18 : xb;
+
+    wire [5:0] glyph_index = msg_char(text_col[4:0]);
+    wire hl;
+
+    glyphs_rom glyphs(
+        .c(glyph_index),
+        .y(g_y),
+        .x(hpos[2:0]),
+        .pixel(hl)
+    );
+
+    // Left-facing coupe silhouette.
+    reg body;
+
+    always @(*) begin
+        body = 1'b0;
+
+        case (yb)
+            6'd12:
+                body = (xb >= 8'd34 && xb <= 8'd49);
+            6'd13:
+                body = (xb >= 8'd32 && xb <= 8'd52);
+            6'd14:
+                body = (xb >= 8'd30 && xb <= 8'd55);
+            6'd15:
+                body = (xb >= 8'd28 && xb <= 8'd58);
+            6'd16:
+                body = (xb >= 8'd26 && xb <= 8'd62);
+            6'd17:
+                body = (xb >= 8'd10 && xb <= 8'd72);
+            6'd18:
+                body = (xb >= 8'd5 && xb <= 8'd74);
+            6'd19, 6'd20, 6'd21:
+                body = (xb >= 8'd3 && xb <= 8'd75);
+            6'd22:
+                body = (xb >= 8'd4 && xb <= 8'd74);
+            6'd23:
+                body = (xb >= 8'd6 && xb <= 8'd73);
+            6'd24:
+                body = (xb >= 8'd9 && xb <= 8'd70);
+            default:
+                body = 1'b0;
+        endcase
+    end
+
+    wire windows =
+        (yb >= 6'd14 && yb <= 6'd16) &&
+        ((xb >= 8'd33 && xb <= 8'd46) ||
+         (xb >= 8'd49 && xb <= 8'd54));
+
+    wire arches =
+        (yb >= 6'd21 && yb <= 6'd24) &&
+        ((xb >= 8'd11 && xb <= 8'd23) ||
+         (xb >= 8'd53 && xb <= 8'd65));
+
+    wire door_seam =
+        (xb == 8'd48 && yb >= 6'd17 && yb <= 6'd24);
+
+    reg wheels;
+
+    always @(*) begin
+        wheels = 1'b0;
+
+        case (yb)
+            6'd22, 6'd28:
+                wheels =
+                    (xb >= 8'd14 && xb <= 8'd20) ||
+                    (xb >= 8'd56 && xb <= 8'd62);
+
+            6'd23, 6'd27:
+                wheels =
+                    (xb >= 8'd12 && xb <= 8'd22) ||
+                    (xb >= 8'd54 && xb <= 8'd64);
+
+            6'd24, 6'd25, 6'd26:
+                wheels =
+                    (xb >= 8'd11 && xb <= 8'd23) ||
+                    (xb >= 8'd53 && xb <= 8'd65);
+
+            default:
+                wheels = 1'b0;
+        endcase
+    end
+
+    wire wheel_holes =
+        (yb == 6'd24 || yb == 6'd26) &&
+        ((xb >= 8'd15 && xb <= 8'd19) ||
+         (xb >= 8'd57 && xb <= 8'd61));
+
+    wire car =
+        (body && !windows && !arches && !door_seam) ||
+        (wheels && !wheel_holes);
+
+    // ui_in[2:0]: seven colors or automatic cycling.
+    wire [2:0] selected =
+        (ui_in[2:0] == 3'd7) ? auto_color : ui_in[2:0];
+
+    reg [5:0] color;
+
+    always @(*) begin
+        case (selected)
+            3'd0: color = 6'b110011; // magenta
+            3'd1: color = 6'b110000; // red
+            3'd2: color = 6'b000011; // blue
+            3'd3: color = 6'b001100; // green
+            3'd4: color = 6'b001111; // cyan
+            3'd5: color = 6'b111100; // yellow
+            3'd6: color = 6'b111111; // white
+            default: color = 6'b110011;
+        endcase
+    end
+
+    assign RGB =
+        (display_on && hpos < 11'd640 &&
+         source_valid && source_y < 11'd480 &&
+         car && hl) ? color : 6'd0;
+
+    wire _unused_ok = &{
+        1'b0, ena, ui_in[5:3], uio_in,
+        glyph_row[10:6], glyph_line[10:4]
+    };
 
 endmodule
-
