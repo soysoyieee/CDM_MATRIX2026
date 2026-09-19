@@ -346,7 +346,7 @@ module tt_um_vga_glyph_mode(
          car && hl) ? color : 6'd0;
 
     wire _unused_ok = &{
-        1'b0, ena, ui_in[5:0], uio_in,
+        1'b0, ena, ui_in[5:0], uio_in, auto_color,
         glyph_row[10:6], glyph_line[10:4]
     };
 
